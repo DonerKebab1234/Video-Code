@@ -2,15 +2,20 @@
 //! (with the original sound), or a single frame into an image.
 
 use std::{
-    io::Write,
+    fmt,
+    io::{Read, Write},
     path::Path,
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context, Result};
+use fontdue::Font;
 
 use crate::{
+    ascii::Look,
     cli::Args,
     decode::VideoDecoder,
     font::{self, GlyphSet},
@@ -21,84 +26,96 @@ use crate::{
 /// ffmpeg's name for our in-memory pixel layout (0x00RRGGBB as u32).
 const PIX_FMT: &str = if cfg!(target_endian = "little") { "bgr0" } else { "0rgb" };
 
+/// Everything that decides what an export looks like.
+pub struct Settings<'a> {
+    pub font: &'a Font,
+    pub font_size: f32,
+    pub charset: &'a [char],
+    pub look: Look,
+    /// Seconds into the video to start at.
+    pub start: f64,
+    /// Seconds to export; `None` means to the end.
+    pub duration: Option<f64>,
+    /// Longest side of the output in pixels.
+    pub size: usize,
+    /// x264 quality, lower is better.
+    pub crf: u32,
+    pub decode_size: usize,
+    pub hwaccel: bool,
+}
+
+/// What an export is about to make. Reported once, before the first frame.
+pub struct Plan {
+    pub width: usize,
+    pub height: usize,
+    pub cols: usize,
+    pub rows: usize,
+    pub fps: f64,
+    /// Expected number of frames, if the video's length is known.
+    pub total: Option<u64>,
+}
+
+pub enum Event<'a> {
+    Start(&'a Plan),
+    Frame { frames: u64, total: Option<u64> },
+}
+
+/// Returned by [`render`] when the cancel flag was set.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("export cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// `video-code clip.mp4 -o out.mp4`: exports with the command-line settings and prints progress.
 pub fn run(args: &Args, input: &Path, output: &Path) -> Result<()> {
-    let info = probe::probe(input)?;
     let font = font::load_font(args.font.as_deref())?;
-    let glyphs = GlyphSet::new(&font, args.font_size, &args.charset());
-    let (cw, ch) = (glyphs.cell_w, glyphs.cell_h);
-    let (dw, dh) = info.decode_size(args.decode_size);
-
-    // Fit the longest side to --size, then snap to whole characters.
-    let aspect = dw as f64 / dh as f64;
-    let size = args.size.max(64) as f64;
-    let target_w = if aspect >= 1.0 { size } else { size * aspect };
-    let cols = ((target_w / cw as f64).round() as usize).max(1);
-    let rows = ((cols as f64 * cw as f64 / aspect / ch as f64).round() as usize).max(1);
-    let grid = Grid { cols, rows, off_x: 0, off_y: 0 };
-    // yuv420p needs even dimensions; any spare pixel stays black.
-    let (out_w, out_h) = (even(cols * cw), even(rows * ch));
-
-    let image = is_image(output);
-    let duration = if image { None } else { args.duration };
-    let decoder = VideoDecoder::spawn(input, args.start, duration, dw, dh, &info.fps, !args.no_hwaccel)?;
-
-    let mut encoder = encoder_command(args, input, output, out_w, out_h, &info, image)
-        .spawn()
-        .map_err(|e| missing_tool(e, "ffmpeg"))?;
-    let mut stdin = encoder.stdin.take().context("ffmpeg stdin")?;
-
-    let expected = if image {
-        Some(1)
-    } else {
-        duration
-            .or(info.duration.map(|d| (d - args.start).max(0.0)))
-            .map(|d| (d * info.fps.value).round().max(1.0) as u64)
+    let charset = args.charset();
+    let settings = Settings {
+        font: &font,
+        font_size: args.font_size,
+        charset: &charset,
+        look: args.look(),
+        start: args.start,
+        duration: args.duration,
+        size: args.size,
+        crf: args.crf,
+        decode_size: args.decode_size,
+        hwaccel: !args.no_hwaccel,
     };
 
-    eprintln!(
-        "Exporting {} -> {}\n  {}x{} px, {}x{} characters, {:.2} fps",
-        input.display(),
-        output.display(),
-        out_w,
-        out_h,
-        cols,
-        rows,
-        info.fps.value
-    );
-
-    let look = args.look();
-    let mut renderer = Renderer::new(glyphs);
-    let mut buf = vec![0u32; out_w * out_h];
+    let image = is_image(output);
     let started = Instant::now();
     let mut last_report = started;
-    let mut frames = 0u64;
-    let mut write_error = None;
+    let mut expected = None;
+    let never = AtomicBool::new(false);
+    let frames = render(input, output, &settings, &never, |event| match event {
+        Event::Start(plan) => {
+            expected = plan.total;
+            eprintln!(
+                "Exporting {} -> {}\n  {}x{} px, {}x{} characters, {:.2} fps",
+                input.display(),
+                output.display(),
+                plan.width,
+                plan.height,
+                plan.cols,
+                plan.rows,
+                plan.fps
+            );
+        }
+        Event::Frame { frames, total } => {
+            if !image && last_report.elapsed() >= Duration::from_millis(250) {
+                last_report = Instant::now();
+                report(frames, total, started);
+            }
+        }
+    })?;
 
-    for frame in decoder.rx.iter() {
-        renderer.draw_grid(&frame.data, dw, dh, &look, grid, &mut buf, out_w, out_h);
-        if let Err(e) = stdin.write_all(as_bytes(&buf)) {
-            write_error = Some(e);
-            break;
-        }
-        frames += 1;
-        if image {
-            break;
-        }
-        if last_report.elapsed() >= Duration::from_millis(250) {
-            last_report = Instant::now();
-            report(frames, expected, started);
-        }
-    }
-
-    drop(stdin);
-    drop(decoder);
-    let status = encoder.wait()?;
-    if !status.success() || write_error.is_some() {
-        bail!("ffmpeg failed while writing {} (see its message above)", output.display());
-    }
-    if frames == 0 {
-        bail!("no frames were decoded from {}", input.display());
-    }
     if !image {
         report(frames, expected, started);
     }
@@ -112,8 +129,114 @@ pub fn run(args: &Args, input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Renders `input` into `output` and returns the number of frames written.
+/// The output type follows its extension (.mp4, .webm, .gif, .png, ...).
+pub fn render(
+    input: &Path,
+    output: &Path,
+    settings: &Settings,
+    cancel: &AtomicBool,
+    mut on_event: impl FnMut(Event),
+) -> Result<u64> {
+    let info = probe::probe(input)?;
+    let glyphs = GlyphSet::new(settings.font, settings.font_size, settings.charset);
+    let (cw, ch) = (glyphs.cell_w, glyphs.cell_h);
+    let (dw, dh) = info.decode_size(settings.decode_size);
+
+    // Fit the longest side to `size`, then snap to whole characters.
+    let (cols, rows) = output_grid(dw as f64 / dh as f64, settings.size, cw, ch);
+    let grid = Grid { cols, rows, off_x: 0, off_y: 0 };
+    // yuv420p needs even dimensions; any spare pixel stays black.
+    let (out_w, out_h) = (even(cols * cw), even(rows * ch));
+
+    let image = is_image(output);
+    let duration = if image { None } else { settings.duration };
+    let decoder = VideoDecoder::spawn(input, settings.start, duration, dw, dh, &info.fps, settings.hwaccel)?;
+
+    let mut encoder = encoder_command(settings, input, output, out_w, out_h, &info, image)
+        .spawn()
+        .map_err(|e| missing_tool(e, "ffmpeg"))?;
+    let mut stdin = encoder.stdin.take().context("ffmpeg stdin")?;
+    // Collect ffmpeg's error messages so they can go into our own error.
+    let stderr = encoder.stderr.take();
+    let messages = thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut s) = stderr {
+            let _ = s.read_to_string(&mut text);
+        }
+        text
+    });
+
+    let total = expected_frames(settings, &info, image);
+    on_event(Event::Start(&Plan { width: out_w, height: out_h, cols, rows, fps: info.fps.value, total }));
+
+    let mut renderer = Renderer::new(glyphs);
+    let mut buf = vec![0u32; out_w * out_h];
+    let mut frames = 0u64;
+    let mut write_error = None;
+    let mut cancelled = false;
+
+    for frame in decoder.rx.iter() {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+        renderer.draw_grid(&frame.data, dw, dh, &settings.look, grid, &mut buf, out_w, out_h);
+        if let Err(e) = stdin.write_all(as_bytes(&buf)) {
+            write_error = Some(e);
+            break;
+        }
+        frames += 1;
+        on_event(Event::Frame { frames, total });
+        if image {
+            break;
+        }
+    }
+
+    drop(stdin);
+    drop(decoder);
+    if cancelled {
+        let _ = encoder.kill();
+        let _ = encoder.wait();
+        let _ = std::fs::remove_file(output);
+        return Err(Cancelled.into());
+    }
+    let status = encoder.wait()?;
+    let messages = messages.join().unwrap_or_default();
+    if !status.success() || write_error.is_some() {
+        let detail = last_lines(&messages);
+        if detail.is_empty() {
+            bail!("ffmpeg failed while writing {}", output.display());
+        }
+        bail!("ffmpeg failed while writing {}: {detail}", output.display());
+    }
+    if frames == 0 {
+        bail!("no frames were decoded from {}", input.display());
+    }
+    Ok(frames)
+}
+
+/// Character grid of an export: the longest side fits `size` pixels.
+pub fn output_grid(aspect: f64, size: usize, cw: usize, ch: usize) -> (usize, usize) {
+    let size = size.max(64) as f64;
+    let target_w = if aspect >= 1.0 { size } else { size * aspect };
+    let cols = ((target_w / cw as f64).round() as usize).max(1);
+    let rows = ((cols as f64 * cw as f64 / aspect / ch as f64).round() as usize).max(1);
+    (cols, rows)
+}
+
+fn expected_frames(settings: &Settings, info: &MediaInfo, image: bool) -> Option<u64> {
+    if image {
+        return Some(1);
+    }
+    settings
+        .duration
+        .or(info.duration.map(|d| (d - settings.start).max(0.0)))
+        .map(|d| (d * info.fps.value).round().max(1.0) as u64)
+}
+
 fn encoder_command(
-    args: &Args,
+    settings: &Settings,
     input: &Path,
     output: &Path,
     w: usize,
@@ -133,40 +256,40 @@ fn encoder_command(
     if image {
         cmd.args(["-frames:v", "1", "-update", "1"]);
     } else {
-        // Second input: the original file, for its sound.
-        if args.start > 0.0 {
-            cmd.arg("-ss").arg(format!("{:.3}", args.start));
-        }
-        if let Some(d) = args.duration {
-            cmd.arg("-t").arg(format!("{d:.3}"));
-        }
-        cmd.arg("-i").arg(input).args(["-map", "0:v:0", "-map", "1:a:0?"]);
+        let ext = extension(output);
+        if ext == "gif" {
+            // GIFs can't hold sound, so the original file isn't needed.
+            cmd.args(["-vf", "split[a][b];[a]palettegen[p];[b][p]paletteuse"]);
+        } else {
+            // Second input: the original file, for its sound.
+            if settings.start > 0.0 {
+                cmd.arg("-ss").arg(format!("{:.3}", settings.start));
+            }
+            if let Some(d) = settings.duration {
+                cmd.arg("-t").arg(format!("{d:.3}"));
+            }
+            cmd.arg("-i").arg(input).args(["-map", "0:v:0", "-map", "1:a:0?"]);
 
-        let crf = args.crf.to_string();
-        match extension(output).as_str() {
-            "webm" => {
+            if ext == "webm" {
                 cmd.args(["-c:v", "libvpx-vp9", "-b:v", "0", "-crf"])
-                    .arg((args.crf + 13).to_string())
+                    .arg((settings.crf + 13).to_string())
                     .args(["-row-mt", "1", "-c:a", "libopus"]);
-            }
-            "gif" => {
-                cmd.args(["-vf", "split[a][b];[a]palettegen[p];[b][p]paletteuse"]);
-            }
-            ext => {
-                cmd.args(["-c:v", "libx264", "-preset", "medium", "-crf", &crf, "-pix_fmt", "yuv420p"])
-                    .args(["-c:a", "aac", "-b:a", "192k"]);
-                if matches!(ext, "mp4" | "mov" | "m4v") {
+            } else {
+                cmd.args(["-c:v", "libx264", "-preset", "medium", "-crf"])
+                    .arg(settings.crf.to_string())
+                    .args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
+                if matches!(ext.as_str(), "mp4" | "mov" | "m4v") {
                     cmd.args(["-movflags", "+faststart"]);
                 }
             }
+            cmd.arg("-shortest");
         }
-        cmd.arg("-shortest");
     }
 
     cmd.arg(output)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     cmd
 }
 
@@ -183,6 +306,12 @@ fn report(frames: u64, expected: Option<u64>, started: Instant) {
     }
 }
 
+/// The last few lines of a tool's error output, for an error message.
+pub fn last_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lines[lines.len().saturating_sub(3)..].join(" / ")
+}
+
 fn as_bytes(pixels: &[u32]) -> &[u8] {
     // SAFETY: u32 has no padding and any byte pattern is a valid u8.
     unsafe { std::slice::from_raw_parts(pixels.as_ptr().cast::<u8>(), std::mem::size_of_val(pixels)) }
@@ -192,13 +321,13 @@ fn even(x: usize) -> usize {
     x + (x & 1)
 }
 
-fn extension(path: &Path) -> String {
+pub fn extension(path: &Path) -> String {
     path.extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default()
 }
 
-fn is_image(path: &Path) -> bool {
+pub fn is_image(path: &Path) -> bool {
     matches!(
         extension(path).as_str(),
         "png" | "jpg" | "jpeg" | "bmp" | "webp" | "tif" | "tiff"
