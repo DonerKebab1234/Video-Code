@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#000000">
+  <title>video-code</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-play" viewBox="0 0 24 24"><path class="fill" d="M8 5.6v12.8c0 .8.9 1.3 1.6.9l10.2-6.4c.6-.4.6-1.4 0-1.8L9.6 4.7C8.9 4.3 8 4.8 8 5.6z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect class="fill" x="6.5" y="5" width="4" height="14" rx="1"/><rect class="fill" x="13.5" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-replay" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6"/><path d="M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.7l2 2.2h7.3a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-loop" viewBox="0 0 24 24"><path d="M17 3l3 3-3 3"/><path d="M4 12v-1a5 5 0 0 1 5-5h11"/><path d="M7 21l-3-3 3-3"/><path d="M20 12v1a5 5 0 0 1-5 5H4"/></symbol>
+    <symbol id="i-look" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 4v11"/><path d="M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19.5h14"/></symbol>
+    <symbol id="i-fullscreen" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></symbol>
+    <symbol id="i-fullscreen-exit" viewBox="0 0 24 24"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  </svg>
+
+  <main class="stage" id="stage" data-mode="empty">
+    <video id="video" class="source" playsinline preload="auto" tabindex="-1" aria-hidden="true"></video>
+    <canvas id="view" class="view" role="img" aria-label="The video drawn as ASCII art"></canvas>
+
+    <section class="empty" id="empty" aria-labelledby="empty-title">
+      <div class="card">
+        <h1 class="wordmark" id="empty-title" translate="no">video-code</h1>
+        <p class="lede" id="empty-text">Turn any video into live ASCII art, then export it.</p>
+        <button class="btn btn-primary btn-large" id="choose" type="button">Choose a video</button>
+        <p class="hint" id="drop-hint">or drop one anywhere on this page</p>
+        <p class="warn" id="warn" hidden></p>
+        <p class="foot">Press <kbd>?</kbd> for keyboard shortcuts</p>
+      </div>
+    </section>
+
+    <section class="notice" id="notice" role="status" aria-live="polite" hidden>
+      <div class="card">
+        <p id="notice-text"></p>
+        <div class="progress" id="notice-progress" hidden><div class="progress-fill"></div></div>
+        <div class="actions" id="notice-actions"></div>
+      </div>
+    </section>
+
+    <div class="drop" id="drop" hidden><p>Drop to play</p></div>
+
+    <header class="top chrome">
+      <div class="top-left">
+        <p class="title" id="title" translate="no"></p>
+        <p class="stats" id="stats" hidden></p>
+      </div>
+      <button class="pill" id="job-pill" type="button" hidden></button>
+    </header>
+
+    <footer class="bar chrome" id="bar">
+      <div class="seek">
+        <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="Seek">
+        <output class="seek-tip" id="seek-tip" hidden></output>
+      </div>
+      <div class="row">
+        <div class="group">
+          <button class="icon-btn" id="play" type="button" aria-label="Play" title="Play (Space)"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
+          <div class="volume">
+            <button class="icon-btn" id="mute" type="button" aria-label="Mute" title="Mute (M)"><svg class="icon" aria-hidden="true"><use href="#i-volume"/></svg></button>
+            <input type="range" id="volume" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+          </div>
+          <p class="time"><span id="time-now">00:00</span><span class="time-sep"> / </span><span id="time-total">00:00</span></p>
+        </div>
+        <div class="group">
+          <button class="icon-btn" id="open" type="button" aria-label="Open another video" title="Open another video (O)"><svg class="icon" aria-hidden="true"><use href="#i-open"/></svg></button>
+          <button class="icon-btn toggle" id="loop" type="button" aria-label="Loop" aria-pressed="false" title="Loop (L)"><svg class="icon" aria-hidden="true"><use href="#i-loop"/></svg></button>
+          <button class="icon-btn" id="look-btn" type="button" popovertarget="look" aria-label="Look" aria-expanded="false" title="Look: colours and characters (T)"><svg class="icon" aria-hidden="true"><use href="#i-look"/></svg></button>
+          <button class="btn btn-bar" id="export-btn" type="button" title="Export (E)" disabled><svg class="icon" aria-hidden="true"><use href="#i-export"/></svg><span class="label">Export</span></button>
+          <button class="icon-btn key-btn" id="help-btn" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
+          <button class="icon-btn" id="fullscreen" type="button" aria-label="Fullscreen" title="Fullscreen (F)"><svg class="icon" aria-hidden="true"><use href="#i-fullscreen"/></svg></button>
+        </div>
+      </div>
+    </footer>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </main>
+
+  <div class="panel" id="look" popover aria-labelledby="look-title">
+    <div class="panel-head">
+      <h2 id="look-title">Look</h2>
+      <button class="link" id="look-reset" type="button">Reset</button>
+    </div>
+    <fieldset class="field">
+      <legend>Colour</legend>
+      <div class="seg seg-modes" id="mode-seg"></div>
+    </fieldset>
+    <fieldset class="field">
+      <legend>Style</legend>
+      <div class="seg" id="style-seg"></div>
+      <p class="help" id="style-info"></p>
+    </fieldset>
+    <div class="slider">
+      <label for="look-size">Character size</label>
+      <output id="look-size-out" for="look-size"></output>
+      <input type="range" id="look-size" min="4" max="64" step="1">
+    </div>
+    <div class="slider">
+      <label for="look-edges">Edges</label>
+      <output id="look-edges-out" for="look-edges"></output>
+      <input type="range" id="look-edges" min="0.5" max="6" step="0.25">
+    </div>
+    <div class="slider">
+      <label for="look-light">Light</label>
+      <output id="look-light-out" for="look-light"></output>
+      <input type="range" id="look-light" min="0.2" max="4" step="0.1">
+    </div>
+    <div class="slider">
+      <label for="look-sat">Saturation</label>
+      <output id="look-sat-out" for="look-sat"></output>
+      <input type="range" id="look-sat" min="0" max="3" step="0.1">
+    </div>
+    <div class="field">
+      <label for="look-chars">Characters</label>
+      <input type="text" id="look-chars" placeholder="All printable ASCII" spellcheck="false" autocomplete="off">
+      <div class="chips" id="look-presets"></div>
+    </div>
+  </div>
+
+  <dialog class="dialog" id="help" aria-labelledby="help-title" autofocus>
+    <div class="dialog-head">
+      <h2 id="help-title">Keyboard shortcuts</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="keys">
+      <section>
+        <h3>Playback</h3>
+        <dl>
+          <div><dt><kbd>Space</kbd></dt><dd>Play or pause</dd></div>
+          <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Back or forward 5 seconds</dd></div>
+          <div><dt><kbd>0</kbd>–<kbd>9</kbd></dt><dd>Jump to 0–90%</dd></div>
+          <div><dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>Start or end</dd></div>
+          <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Volume</dd></div>
+          <div><dt><kbd>M</kbd></dt><dd>Mute</dd></div>
+          <div><dt><kbd>L</kbd></dt><dd>Loop</dd></div>
+        </dl>
+      </section>
+      <section>
+        <h3>Look</h3>
+        <dl>
+          <div><dt><kbd>+</kbd> <kbd>-</kbd></dt><dd>Bigger or smaller characters</dd></div>
+          <div><dt><kbd>C</kbd></dt><dd>Next colour style</dd></div>
+          <div><dt><kbd>S</kbd></dt><dd>Next character style</dd></div>
+          <div><dt><kbd>&lt;</kbd> <kbd>&gt;</kbd></dt><dd>Softer or sharper edges</dd></div>
+          <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Darker or brighter</dd></div>
+          <div><dt><kbd>T</kbd></dt><dd>Look panel</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>Reset the look</dd></div>
+        </dl>
+      </section>
+      <section>
+        <h3>Files and view</h3>
+        <dl>
+          <div><dt><kbd>O</kbd></dt><dd>Open a video</dd></div>
+          <div><dt><kbd>E</kbd></dt><dd>Export</dd></div>
+          <div><dt><kbd>P</kbd></dt><dd>Save this frame as PNG</dd></div>
+          <div><dt><kbd>F</kbd></dt><dd>Fullscreen</dd></div>
+          <div><dt><kbd>H</kbd></dt><dd>Show stats</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>This list</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Close or leave fullscreen</dd></div>
+        </dl>
+      </section>
+    </div>
+    <p class="help keys-note">Scrolling over the picture also changes the character size, and <kbd>[</kbd> <kbd>]</kbd> work for edges too. Click the picture to pause, double-click for fullscreen.</p>
+  </dialog>
+
+  <dialog class="dialog dialog-narrow" id="export" aria-labelledby="export-title" autofocus>
+    <form id="export-form" novalidate>
+      <div class="dialog-head">
+        <h2 id="export-title">Export</h2>
+        <button class="icon-btn" type="button" data-close aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </div>
+      <div id="ex-fields">
+        <fieldset class="field">
+          <legend>Format</legend>
+          <div class="seg" id="ex-format"></div>
+        </fieldset>
+        <div class="field-row">
+          <div class="field">
+            <label for="ex-start" id="ex-start-label">Start</label>
+            <div class="time-input">
+              <input type="text" id="ex-start" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="ex-range-help ex-error">
+              <button class="link" type="button" data-now="ex-start">Now</button>
+            </div>
+          </div>
+          <div class="field" id="ex-end-field">
+            <label for="ex-end">End</label>
+            <div class="time-input">
+              <input type="text" id="ex-end" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="ex-range-help ex-error">
+              <button class="link" type="button" data-now="ex-end">Now</button>
+            </div>
+          </div>
+        </div>
+        <p class="help" id="ex-range-help"></p>
+        <div class="field">
+          <label for="ex-size">Size (longest side)</label>
+          <select id="ex-size"></select>
+          <p class="help" id="ex-dims"></p>
+        </div>
+        <p class="help" id="ex-look"></p>
+      </div>
+      <div class="ex-progress" id="ex-progress" hidden>
+        <div class="progress" id="ex-bar"><div class="progress-fill"></div></div>
+        <p id="ex-status" role="status" aria-live="polite"></p>
+      </div>
+      <p class="error" id="ex-error" role="alert" hidden></p>
+      <div class="actions">
+        <button class="btn" type="button" id="ex-secondary">Cancel</button>
+        <button class="btn btn-primary" type="submit" id="ex-primary">Export MP4</button>
+      </div>
+    </form>
+  </dialog>
+
+  <input type="file" id="file" accept="video/*,image/gif,.mkv,.avi,.mov,.wmv,.flv,.ts,.m2ts,.mts,.3gp,.ogv" hidden>
+</body>
+</html>

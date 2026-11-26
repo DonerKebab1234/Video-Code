@@ -127,6 +127,25 @@ impl GlyphSet {
         self.lookup.get(&c).map(|&i| i as usize)
     }
 
+    /// Packs everything the browser needs to pick and draw the same characters,
+    /// little-endian: `cell_w`, `cell_h`, `count` (u32 each), the 256-entry ramp
+    /// (u16), `count` x 6 shape values (f32), then `count` coverage bitmaps (u8).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let count = self.shapes.len();
+        let mut out = Vec::with_capacity(12 + 512 + count * ZONES * 4 + self.bitmaps.len());
+        for v in [self.cell_w, self.cell_h, count] {
+            out.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        for v in &self.ramp {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in self.shapes.iter().flatten() {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&self.bitmaps);
+        out
+    }
+
     /// The glyph whose shape is closest to `target` (squared distance).
     #[inline]
     pub fn best_match(&self, target: &Shape) -> u16 {

@@ -80,6 +80,18 @@ pub struct Args {
     /// Export: x264 quality, lower is better (18 looks lossless).
     #[arg(long, default_value_t = 18, value_name = "N")]
     pub crf: u32,
+
+    /// Open the browser interface instead of a window.
+    #[arg(long, conflicts_with_all = ["input", "export"])]
+    pub web: bool,
+
+    /// Browser interface: port to listen on (if it's taken, a free one is picked).
+    #[arg(long, default_value_t = 7878, value_name = "PORT", requires = "web")]
+    pub port: u16,
+
+    /// Browser interface: don't open the browser automatically.
+    #[arg(long, requires = "web")]
+    pub no_browser: bool,
 }
 
 impl Args {
