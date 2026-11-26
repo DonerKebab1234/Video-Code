@@ -30,6 +30,22 @@ cargo build --release
 
 Start it without a file and you get an animated idle screen. Drag a video onto the window to play it.
 
+## Browser interface
+
+```sh
+cargo run --release -- --web
+```
+
+This starts a small local server and opens `http://127.0.0.1:7878` in your browser. Choose a video or drop one anywhere on the page.
+
+- **Live preview** in the browser, drawn on the GPU with the same character-picking maths and the same glyphs as the exporter, so what you see is what you export.
+- **Look panel** (sliders button or `T`): colour style, character style, character size, edges, light, saturation and your own characters.
+- **Export** (`E`): MP4, WebM, GIF or a single PNG frame, with a start and end time and an output size. It uses the same renderer as the command line, keeps the sound, and downloads the file when it's done.
+- **`?`** shows every keyboard shortcut. They match the desktop player, plus `O` open, `E` export, `P` save the current frame, `T` look panel and `R` reset the look.
+- Files the browser can't play (AVI, ProRes, some MKVs...) are converted with FFmpeg for the preview automatically.
+
+Everything stays on your computer: the server only answers on `127.0.0.1`, and uploaded videos and exports live in a temp folder that is emptied the next time it starts. Use `--port <PORT>` to pick another port and `--no-browser` to not open a browser.
+
 ### Controls
 
 | Key | Action |
@@ -96,3 +112,7 @@ Run `video-code --help` for everything.
 | `src/render.rs` | characters → pixels, on-screen text |
 | `src/player.rs` | the window, controls, HUD |
 | `src/export.rs` | rendering to a file |
+| `src/web.rs` | `--web`: local server for the browser interface (glyphs, uploads, export jobs) |
+| `web/engine.js` | the same frame → characters → pixels steps as WebGL shaders, for the live preview |
+| `web/app.js` | the browser interface: files, controls, shortcuts, look panel, export |
+| `web/index.html`, `web/style.css` | the page itself (built into the program, so it's still one file) |
