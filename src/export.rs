@@ -151,7 +151,7 @@ pub fn render(
 
     let image = is_image(output);
     let duration = if image { None } else { settings.duration };
-    let decoder = VideoDecoder::spawn(input, settings.start, duration, dw, dh, &info.fps, settings.hwaccel)?;
+    let decoder = VideoDecoder::spawn(input, settings.start, duration, dw, dh, &info, settings.hwaccel)?;
 
     let mut encoder = encoder_command(settings, input, output, out_w, out_h, &info, image)
         .spawn()

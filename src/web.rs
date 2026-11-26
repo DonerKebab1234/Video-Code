@@ -574,12 +574,18 @@ fn transcode_preview(upload: &Upload, job: &Job) -> Result<()> {
     let fps = upload.info.fps.value;
     lock(&job.status).total = upload.info.duration.map(|d| (d * fps).round().max(1.0) as u64);
 
-    let mut child = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
         .arg(&upload.path)
         .args(["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-vf"])
         .arg(format!("scale={w}:{h}"))
-        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"])
+        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]);
+    if upload.info.color_matrix == Some("bt709") {
+        // The copy is smaller, so the browser's size-based guess could change:
+        // say outright how exports will read the colours.
+        cmd.args(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
+    }
+    let mut child = cmd
         .args(["-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"])
         .args(["-progress", "pipe:1", "-nostats"])
         .arg(&job.output)

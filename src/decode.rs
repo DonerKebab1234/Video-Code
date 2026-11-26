@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::Result;
 
-use crate::probe::{missing_tool, Fps};
+use crate::probe::{missing_tool, MediaInfo};
 
 pub struct Frame {
     /// Presentation time in seconds from the start of the file.
@@ -36,9 +36,14 @@ impl VideoDecoder {
         duration: Option<f64>,
         w: usize,
         h: usize,
-        fps: &Fps,
+        info: &MediaInfo,
         hwaccel: bool,
     ) -> Result<Self> {
+        let fps = &info.fps;
+        let mut filter = format!("fps={},scale={w}:{h}:flags=area", fps.expr);
+        if let Some(matrix) = info.color_matrix {
+            filter.push_str(&format!(":in_color_matrix={matrix}"));
+        }
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
         if hwaccel {
@@ -53,7 +58,7 @@ impl VideoDecoder {
         cmd.arg("-i")
             .arg(input)
             .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf"])
-            .arg(format!("fps={},scale={w}:{h}:flags=area", fps.expr))
+            .arg(filter)
             .args(["-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

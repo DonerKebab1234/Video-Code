@@ -96,7 +96,7 @@ Run `video-code --help` for everything.
 
 ## How it works
 
-1. **Decode.** `ffmpeg` decodes the video into raw RGB frames at a fixed frame rate on a background thread. A second `ffmpeg` decodes the audio.
+1. **Decode.** `ffmpeg` decodes the video into raw RGB frames at a fixed frame rate on a background thread. A second `ffmpeg` decodes the audio. Videos that don't say which colour standard they use are read the way browsers read them: BT.709 from 720 px tall, BT.601 below.
 2. **Measure.** The picture is split into a grid of character cells. Each cell is split again into 6 zones (2 × 3), and the program measures the brightness of each zone and the cell's average colour.
 3. **Pick a character.** At startup, every character of the font is rasterised and measured the same way, so each one gets a 6-number "shape". Cells with an edge in them get the character whose shape is closest (so a diagonal edge becomes `/`). Flat cells get a character by brightness from a ramp sorted by ink coverage, with a little fixed noise so gradients mix neighbouring characters.
 4. **Colour and draw.** Each character is drawn in the cell's colour, pushed towards full brightness because the character's ink already shows how bright the cell is. All of this runs in parallel with `rayon`, straight into the window's pixel buffer (`winit` + `softbuffer`).

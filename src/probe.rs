@@ -19,6 +19,9 @@ pub struct MediaInfo {
     pub fps: Fps,
     pub duration: Option<f64>,
     pub has_audio: bool,
+    /// Colour matrix to decode with because the file doesn't name one
+    /// (see [`untagged_matrix`]). `None` lets ffmpeg use the file's own.
+    pub color_matrix: Option<&'static str>,
 }
 
 impl MediaInfo {
@@ -39,7 +42,7 @@ pub fn probe(input: &Path) -> Result<MediaInfo> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,avg_frame_rate,r_frame_rate:stream_tags=rotate:stream_side_data=rotation:format=duration",
+            "stream=width,height,avg_frame_rate,r_frame_rate,color_space:stream_tags=rotate:stream_side_data=rotation:format=duration",
             "-of",
             "default=noprint_wrappers=1",
         ],
@@ -49,6 +52,7 @@ pub fn probe(input: &Path) -> Result<MediaInfo> {
     let (mut avg, mut real) = (None, None);
     let mut duration = None;
     let mut rotation = None::<f64>;
+    let mut color_space = None::<String>;
     for line in video.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
         let value = value.trim();
@@ -59,6 +63,7 @@ pub fn probe(input: &Path) -> Result<MediaInfo> {
             "r_frame_rate" => real = parse_rate(value),
             "duration" => duration = value.parse::<f64>().ok().filter(|d| d.is_finite() && *d > 0.0),
             "rotation" | "TAG:rotate" => rotation = value.parse().ok(),
+            "color_space" => color_space = Some(value.to_string()),
             _ => {}
         }
     }
@@ -66,6 +71,8 @@ pub fn probe(input: &Path) -> Result<MediaInfo> {
     let (Some(mut width), Some(mut height)) = (width, height) else {
         bail!("{} has no video stream", input.display());
     };
+    // Decided on the stored picture, before rotation, like the browsers do.
+    let color_matrix = untagged_matrix(color_space.as_deref(), height);
     if rotation.is_some_and(|r| (r.round() as i64).rem_euclid(180) == 90) {
         std::mem::swap(&mut width, &mut height);
     }
@@ -83,7 +90,18 @@ pub fn probe(input: &Path) -> Result<MediaInfo> {
         fps,
         duration,
         has_audio: !audio.trim().is_empty(),
+        color_matrix,
     })
+}
+
+/// A video without a colour-space tag doesn't say how to turn its YUV pixels
+/// into RGB. ffmpeg always guesses BT.601 (the SD standard), which shifts the
+/// colours of HD video. Browsers guess by size instead: BT.709 from 720 px
+/// tall, BT.601 below (checked in Chrome). We do the same, so HD colours come
+/// out right and the web preview matches exports.
+fn untagged_matrix(color_space: Option<&str>, coded_height: usize) -> Option<&'static str> {
+    let untagged = matches!(color_space, None | Some("" | "unknown" | "unspecified" | "reserved"));
+    (untagged && coded_height >= 720).then_some("bt709")
 }
 
 fn parse_rate(s: &str) -> Option<Fps> {
@@ -132,5 +150,26 @@ pub fn missing_tool(e: std::io::Error, tool: &str) -> anyhow::Error {
         )
     } else {
         anyhow!(e).context(format!("failed to run {tool}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::untagged_matrix;
+
+    #[test]
+    fn untagged_hd_is_bt709() {
+        assert_eq!(untagged_matrix(Some("unknown"), 720), Some("bt709"));
+        assert_eq!(untagged_matrix(None, 1080), Some("bt709"));
+        assert_eq!(untagged_matrix(Some("unknown"), 1280), Some("bt709")); // portrait 720x1280
+    }
+
+    #[test]
+    fn untagged_sd_and_tagged_are_left_alone() {
+        assert_eq!(untagged_matrix(Some("unknown"), 716), None);
+        assert_eq!(untagged_matrix(Some("unknown"), 576), None);
+        assert_eq!(untagged_matrix(Some("bt709"), 1080), None);
+        assert_eq!(untagged_matrix(Some("smpte170m"), 1080), None);
+        assert_eq!(untagged_matrix(Some("bt2020nc"), 2160), None);
     }
 }

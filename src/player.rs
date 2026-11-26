@@ -283,7 +283,7 @@ impl Player {
         m.pending = None;
         m.got_frame = false;
         m.ended = false;
-        m.video = Some(VideoDecoder::spawn(&m.path, t, None, m.dw, m.dh, &m.info.fps, !self.args.no_hwaccel)?);
+        m.video = Some(VideoDecoder::spawn(&m.path, t, None, m.dw, m.dh, &m.info, !self.args.no_hwaccel)?);
         if let Some(a) = &self.audio {
             if m.has_audio {
                 a.play(&m.path, t, None);
